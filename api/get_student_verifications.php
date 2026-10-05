@@ -12,7 +12,7 @@ $status = isset($_GET['status']) ? strtoupper(trim($_GET['status'])) : '';
 try {
     $sql = "SELECT sv.*, u.full_name, u.email, u.phone
             FROM student_verifications sv
-            JOIN users u ON sv.user_id = u.user_id";
+            JOIN users u ON sv.student_id = u.user_id";
 
     $params = [];
     if (!empty($status)) {

@@ -17,10 +17,24 @@ try {
     $user = $stmt->fetch();
 
     if ($user && ($password === $user['password'] || password_verify($password, $user['password']))) {
+        $userId = (int)$user['user_id'];
         unset($user['password']);
+
+        $rawToken = bin2hex(random_bytes(32));
+        $tokenHash = hash('sha256', $rawToken);
+        $expiresAt = date('Y-m-d H:i:s', strtotime('+7 days'));
+
+        $tokenStmt = $pdo->prepare("INSERT INTO auth_tokens (user_id, token_hash, expires_at) VALUES (:user_id, :token_hash, :expires_at)");
+        $tokenStmt->execute([
+            'user_id' => $userId,
+            'token_hash' => $tokenHash,
+            'expires_at' => $expiresAt
+        ]);
+
         echo json_encode([
             "success" => true,
             "message" => "Login successful.",
+            "token" => $rawToken,
             "user" => $user
         ]);
     } else {

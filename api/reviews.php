@@ -4,10 +4,12 @@ require_once 'db.php';
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
-    $sql = "SELECT r.*, u.full_name, bh.house_name
+    $sql = "SELECT r.*, u.full_name, u.email, u.profile_image, bh.house_name,
+                   sv.verification_status
             FROM reviews r
             JOIN users u ON r.user_id = u.user_id
-            JOIN boarding_houses bh ON r.house_id = bh.house_id";
+            JOIN boarding_houses bh ON r.house_id = bh.house_id
+            LEFT JOIN student_verifications sv ON u.user_id = sv.student_id";
     $params = [];
 
     if (isset($_GET['house_id'])) {
@@ -96,13 +98,13 @@ if ($method === 'GET') {
         ]);
         $reviewId = $stmt->fetchColumn();
 
-        // Notification
+        // Notification - reference_id set to $house_id so tapping opens LandlordReviewsActivity for $house_id
         $info = $pdo->prepare("SELECT u.full_name, bh.landlord_id, bh.house_name FROM boarding_houses bh JOIN users u ON u.user_id = :uid WHERE bh.house_id = :hid");
         $info->execute(['uid' => $user_id, 'hid' => $house_id]);
         $infoData = $info->fetch();
         if ($infoData && $infoData['landlord_id']) {
             $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (?, ?, ?, 'REVIEW', ?)");
-            $nStmt->execute([$infoData['landlord_id'], 'New Review', $infoData['full_name'] . ' left a ' . $rating . '-star review for ' . $infoData['house_name'] . '.', $reviewId]);
+            $nStmt->execute([$infoData['landlord_id'], 'New Review', $infoData['full_name'] . ' left a ' . $rating . '-star review for ' . $infoData['house_name'] . '.', $house_id]);
         }
 
         echo json_encode(["success" => true, "message" => "Review submitted successfully.", "review_id" => $reviewId]);

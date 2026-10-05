@@ -15,7 +15,28 @@ if ($method === 'GET') {
             echo json_encode(["success" => false, "message" => "User not found."]);
         }
     } else {
-        $stmt = $pdo->query("SELECT user_id, full_name, email, phone, user_type, profile_image FROM public.users ORDER BY user_id DESC");
+        $sql = "SELECT user_id, full_name, email, phone, user_type, profile_image FROM public.users WHERE 1=1";
+        $params = [];
+
+        if (isset($_GET['search']) && !empty(trim($_GET['search']))) {
+            $sql .= " AND (LOWER(full_name) LIKE LOWER(:search) OR LOWER(email) LIKE LOWER(:search))";
+            $params['search'] = '%' . trim($_GET['search']) . '%';
+        }
+
+        if (isset($_GET['user_type']) && !empty(trim($_GET['user_type']))) {
+            $sql .= " AND user_type = :user_type::user_type_enum";
+            $params['user_type'] = strtoupper(trim($_GET['user_type']));
+        }
+
+        if (isset($_GET['exclude_user_id'])) {
+            $sql .= " AND user_id != :exclude_user_id";
+            $params['exclude_user_id'] = (int)$_GET['exclude_user_id'];
+        }
+
+        $sql .= " ORDER BY full_name ASC";
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
         $users = $stmt->fetchAll();
         echo json_encode(["success" => true, "data" => $users]);
     }

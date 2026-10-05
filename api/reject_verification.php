@@ -9,12 +9,11 @@ if ($method !== 'POST' && $method !== 'PATCH') {
 
 $data = json_decode(file_get_contents("php://input"), true);
 $verification_id = isset($data['verification_id']) ? (int)$data['verification_id'] : 0;
-$house_id = isset($data['house_id']) ? (int)$data['house_id'] : 0;
 $admin_id = isset($data['admin_id']) ? (int)$data['admin_id'] : 0;
 $rejection_reason = isset($data['rejection_reason']) ? trim($data['rejection_reason']) : '';
 
-if (($verification_id <= 0 && $house_id <= 0) || $admin_id <= 0 || empty($rejection_reason)) {
-    echo json_encode(["success" => false, "message" => "Verification ID / House ID, Admin ID, and Rejection Reason are required."]);
+if ($verification_id <= 0 || $admin_id <= 0 || empty($rejection_reason)) {
+    echo json_encode(["success" => false, "message" => "Verification ID, Admin ID, and Rejection Reason are required."]);
     exit();
 }
 
@@ -30,17 +29,15 @@ try {
 
     $pdo->beginTransaction();
 
-    if ($verification_id > 0) {
-        $stmt = $pdo->prepare("UPDATE boarding_house_verification SET verification_status = 'REJECTED', rejection_reason = :reason, reviewed_by = :admin_id, reviewed_at = CURRENT_TIMESTAMP WHERE verification_id = :verification_id RETURNING house_id");
-        $stmt->execute(['reason' => $rejection_reason, 'admin_id' => $admin_id, 'verification_id' => $verification_id]);
-        $house_id = $stmt->fetchColumn();
-    } else {
-        $stmt = $pdo->prepare("UPDATE boarding_house_verification SET verification_status = 'REJECTED', rejection_reason = :reason, reviewed_by = :admin_id, reviewed_at = CURRENT_TIMESTAMP WHERE house_id = :house_id");
-        $stmt->execute(['reason' => $rejection_reason, 'admin_id' => $admin_id, 'house_id' => $house_id]);
-    }
+    $stmt = $pdo->prepare("UPDATE landlord_verifications SET verification_status = 'REJECTED', rejection_reason = :reason, reviewed_by = :admin_id, reviewed_at = CURRENT_TIMESTAMP WHERE verification_id = :verification_id RETURNING landlord_id");
+    $stmt->execute(['reason' => $rejection_reason, 'admin_id' => $admin_id, 'verification_id' => $verification_id]);
+    $landlord_id = $stmt->fetchColumn();
+
+    $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (?, 'Verification Rejected', 'Your landlord verification was rejected. Reason: ' || ?, 'VERIFICATION', ?)");
+    $nStmt->execute([$landlord_id, $rejection_reason, $verification_id]);
 
     $pdo->commit();
-    echo json_encode(["success" => true, "message" => "Boarding house verification rejected.", "house_id" => $house_id]);
+    echo json_encode(["success" => true, "message" => "Landlord verification rejected.", "landlord_id" => $landlord_id]);
 } catch (PDOException $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();

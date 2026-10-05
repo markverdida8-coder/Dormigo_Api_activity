@@ -27,11 +27,21 @@ try {
         exit();
     }
 
-    $stmt = $pdo->prepare("UPDATE student_verifications SET verification_status = 'REJECTED', rejection_reason = :reason WHERE verification_id = :verification_id");
-    $stmt->execute(['reason' => $rejection_reason, 'verification_id' => $verification_id]);
+    $pdo->beginTransaction();
 
+    $stmt = $pdo->prepare("UPDATE student_verifications SET verification_status = 'REJECTED', rejection_reason = :reason, reviewed_by = :admin_id, reviewed_at = CURRENT_TIMESTAMP WHERE verification_id = :verification_id RETURNING student_id");
+    $stmt->execute(['reason' => $rejection_reason, 'admin_id' => $admin_id, 'verification_id' => $verification_id]);
+    $student_id = $stmt->fetchColumn();
+
+    $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (?, 'Verification Rejected', 'Your student verification was rejected. Reason: ' || ?, 'VERIFICATION', ?)");
+    $nStmt->execute([$student_id, $rejection_reason, $verification_id]);
+
+    $pdo->commit();
     echo json_encode(["success" => true, "message" => "Student verification rejected."]);
 } catch (PDOException $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
 }
 ?>

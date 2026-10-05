@@ -26,7 +26,7 @@ if ($method === 'GET') {
     }
 
     if (isset($_GET['user_id']) && isset($_GET['other_user_id'])) {
-        // Fetch full message thread between two users
+        // Fetch full message thread between two users, filtered by user's cleared_at timestamp
         $userId = (int)$_GET['user_id'];
         $otherUserId = (int)$_GET['other_user_id'];
 
@@ -44,8 +44,8 @@ if ($method === 'GET') {
                                FROM messages m
                                JOIN users u1 ON m.sender_id = u1.user_id
                                JOIN users u2 ON m.receiver_id = u2.user_id
-                               WHERE (m.sender_id = :u1 AND m.receiver_id = :u2)
-                                  OR (m.sender_id = :u2 AND m.receiver_id = :u1)
+                               WHERE ((m.sender_id = :u1 AND m.receiver_id = :u2) OR (m.sender_id = :u2 AND m.receiver_id = :u1))
+                                 AND m.created_at > COALESCE((SELECT dc.deleted_at FROM deleted_conversations dc WHERE dc.user_id = :u1 AND dc.other_user_id = :u2), '1970-01-01'::timestamp)
                                ORDER BY m.created_at ASC");
         $stmt->execute(['u1' => $userId, 'u2' => $otherUserId]);
         echo json_encode(["success" => true, "data" => $stmt->fetchAll()]);
@@ -72,8 +72,9 @@ if ($method === 'GET') {
                     )
                         message_id,
                         CASE WHEN sender_id = :user_id THEN receiver_id ELSE sender_id END AS other_user_id
-                    FROM messages
-                    WHERE sender_id = :user_id OR receiver_id = :user_id
+                    FROM messages m_inner
+                    WHERE (sender_id = :user_id OR receiver_id = :user_id)
+                      AND m_inner.created_at > COALESCE((SELECT dc.deleted_at FROM deleted_conversations dc WHERE dc.user_id = :user_id AND dc.other_user_id = CASE WHEN sender_id = :user_id THEN receiver_id ELSE sender_id END), '1970-01-01'::timestamp)
                     ORDER BY CASE WHEN sender_id = :user_id THEN receiver_id ELSE sender_id END, created_at DESC
                 ) c
                 JOIN messages m ON c.message_id = m.message_id
@@ -196,9 +197,14 @@ if ($method === 'GET') {
     }
 
     try {
-        $stmt = $pdo->prepare("DELETE FROM messages WHERE (sender_id = :u1 AND receiver_id = :u2) OR (sender_id = :u2 AND receiver_id = :u1)");
+        // Record user-specific clear point (deleted_at)
+        $stmt = $pdo->prepare("INSERT INTO deleted_conversations (user_id, other_user_id, deleted_at)
+                                VALUES (:u1, :u2, CURRENT_TIMESTAMP)
+                                ON CONFLICT (user_id, other_user_id)
+                                DO UPDATE SET deleted_at = CURRENT_TIMESTAMP");
         $stmt->execute(['u1' => $userId, 'u2' => $otherUserId]);
-        echo json_encode(["success" => true, "message" => "Conversation cleared successfully."]);
+
+        echo json_encode(["success" => true, "message" => "Conversation cleared for current user."]);
     } catch (PDOException $e) {
         echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
     }

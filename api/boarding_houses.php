@@ -4,11 +4,41 @@ require_once 'db.php';
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
-    $stmt = $pdo->query("SELECT bh.*, COALESCE((SELECT json_agg(hp.photo_path) FROM house_photos hp WHERE hp.house_id = bh.house_id), '[]'::json) AS photo_paths,
-                          bhv.verification_status, bhv.rejection_reason
-                          FROM boarding_houses bh
-                          LEFT JOIN boarding_house_verification bhv ON bh.house_id = bhv.house_id
-                          ORDER BY bh.house_id DESC");
+    $availableOnly = isset($_GET['available_only']) && $_GET['available_only'] == '1';
+
+    $sql = "
+        SELECT bh.*,
+               COALESCE((SELECT json_agg(hp.photo_path) FROM house_photos hp WHERE hp.house_id = bh.house_id), '[]'::json) AS photo_paths,
+               COALESCE(
+                   (SELECT lv.verification_status
+                    FROM landlord_verifications lv
+                    WHERE lv.landlord_id = bh.landlord_id
+                    ORDER BY lv.submitted_at DESC LIMIT 1),
+                   'NOT_SUBMITTED'
+               ) AS verification_status,
+               bhv.rejection_reason
+        FROM boarding_houses bh
+        LEFT JOIN boarding_house_verification bhv ON bh.house_id = bhv.house_id
+    ";
+
+    if ($availableOnly) {
+        $sql .= " WHERE UPPER(bh.status::text) = 'ACTIVE' AND EXISTS (
+            SELECT 1
+            FROM rooms r
+            WHERE r.house_id = bh.house_id
+              AND UPPER(r.status::text) = 'AVAILABLE'
+              AND r.capacity > (
+                  SELECT COUNT(*)
+                  FROM bookings b
+                  WHERE b.room_id = r.room_id
+                    AND UPPER(b.status::text) = 'APPROVED'
+              )
+        )";
+    }
+
+    $sql .= " ORDER BY bh.house_id DESC";
+
+    $stmt = $pdo->query($sql);
     $houses = $stmt->fetchAll();
     foreach ($houses as &$house) {
         if (is_string($house['photo_paths'])) {
@@ -21,6 +51,33 @@ if ($method === 'GET') {
     echo json_encode(["success" => true, "data" => $houses]);
 
 } elseif ($method === 'POST') {
+    if (isset($_POST['action']) && $_POST['action'] === 'upload_photos') {
+        $houseId = (int)($_POST['house_id'] ?? 0);
+        if ($houseId <= 0 || !isset($_FILES['photos'])) {
+            echo json_encode(["success" => false, "message" => "House ID and photos required."]);
+            exit();
+        }
+        $uploadDir = '../uploads/';
+        if (!file_exists($uploadDir)) {
+            mkdir($uploadDir, 0777, true);
+        }
+        $photoStmt = $pdo->prepare("INSERT INTO house_photos (house_id, photo_path) VALUES (:house_id, :photo_path)");
+        $photoPaths = [];
+        foreach ($_FILES['photos']['tmp_name'] as $key => $tmpName) {
+            if ($_FILES['photos']['error'][$key] === UPLOAD_ERR_OK) {
+                $fileName = 'house_' . $houseId . '_' . time() . '_' . $key . '.jpg';
+                $targetFilePath = $uploadDir . $fileName;
+                if (move_uploaded_file($tmpName, $targetFilePath)) {
+                    $webPath = 'uploads/' . $fileName;
+                    $photoStmt->execute(['house_id' => $houseId, 'photo_path' => $webPath]);
+                    $photoPaths[] = $webPath;
+                }
+            }
+        }
+        echo json_encode(["success" => true, "message" => "Photos uploaded successfully.", "photo_paths" => $photoPaths]);
+        exit();
+    }
+
     if (isset($_POST['action']) && $_POST['action'] === 'upload_gcash_qr') {
         $houseId = (int)($_POST['house_id'] ?? 0);
         if ($houseId <= 0 || !isset($_FILES['gcash_qr'])) {
@@ -145,6 +202,17 @@ if ($method === 'GET') {
             }
         }
 
+        // Check if owner's landlord account is already VERIFIED/APPROVED to auto-verify this new property
+        $vChk = $pdo->prepare("SELECT verification_status FROM landlord_verifications WHERE landlord_id = ? ORDER BY submitted_at DESC LIMIT 1");
+        $vChk->execute([$data['landlord_id']]);
+        $vRow = $vChk->fetch();
+        $lVerifStatus = $vRow ? strtoupper(trim($vRow['verification_status'])) : '';
+
+        if ($lVerifStatus === 'VERIFIED' || $lVerifStatus === 'APPROVED') {
+            $insBhVerif = $pdo->prepare("INSERT INTO boarding_house_verification (house_id, verification_status, submitted_at) VALUES (?, 'VERIFIED', CURRENT_TIMESTAMP)");
+            $insBhVerif->execute([$houseId]);
+        }
+
         $pdo->commit();
 
         echo json_encode([
@@ -154,102 +222,55 @@ if ($method === 'GET') {
             "photo_paths" => $photoPaths
         ]);
     } catch (PDOException $e) {
-        $pdo->rollBack();
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
     }
-
-} elseif ($method === 'PATCH') {
-    $data = json_decode(file_get_contents("php://input"), true);
-    if (!isset($data['house_id'])) {
-        echo json_encode(["success" => false, "message" => "House ID is required."]);
-        exit();
-    }
-    $fields = [];
-    $params = ['house_id' => (int)$data['house_id']];
-
-    if (isset($data['house_name'])) {
-        $fields[] = "house_name = :house_name";
-        $params['house_name'] = $data['house_name'];
-    }
-    if (isset($data['description'])) {
-        $fields[] = "description = :description";
-        $params['description'] = $data['description'];
-    }
-    if (isset($data['address'])) {
-        $fields[] = "address = :address";
-        $params['address'] = $data['address'];
-    }
-    if (isset($data['house_rules'])) {
-        $fields[] = "house_rules = :house_rules";
-        $params['house_rules'] = $data['house_rules'];
-    }
-    if (isset($data['status'])) {
-        $fields[] = "status = :status::house_status_enum";
-        $params['status'] = strtoupper($data['status']);
-    }
-    if (isset($data['free_electricity'])) {
-        $fields[] = "free_electricity = :free_electricity";
-        $params['free_electricity'] = filter_var($data['free_electricity'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
-    }
-    if (isset($data['electricity_rate'])) {
-        $fields[] = "electricity_rate = :electricity_rate";
-        $params['electricity_rate'] = $data['electricity_rate'];
-    }
-    if (isset($data['free_water'])) {
-        $fields[] = "free_water = :free_water";
-        $params['free_water'] = filter_var($data['free_water'], FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
-    }
-    if (isset($data['water_rate'])) {
-        $fields[] = "water_rate = :water_rate";
-        $params['water_rate'] = $data['water_rate'];
-    }
-    if (isset($data['payment_due_day'])) {
-        $fields[] = "payment_due_day = :payment_due_day";
-        $params['payment_due_day'] = (int)$data['payment_due_day'];
-    }
-    if (isset($data['advance_months'])) {
-        $fields[] = "advance_months = :advance_months";
-        $params['advance_months'] = (int)$data['advance_months'];
-    }
-    if (isset($data['security_deposit_months'])) {
-        $fields[] = "security_deposit_months = :security_deposit_months";
-        $params['security_deposit_months'] = (int)$data['security_deposit_months'];
-    }
-    if (isset($data['utility_deposit'])) {
-        $fields[] = "utility_deposit = :utility_deposit";
-        $params['utility_deposit'] = $data['utility_deposit'];
-    }
-    if (isset($data['other_fees'])) {
-        $fields[] = "other_fees = :other_fees";
-        $params['other_fees'] = $data['other_fees'];
-    }
-    if (isset($data['cash_enabled'])) {
-        $fields[] = "cash_enabled = :cash_enabled";
-        $params['cash_enabled'] = filter_var($data['cash_enabled'], FILTER_VALIDATE_BOOLEAN) ? 'true' : 'false';
-    }
-    if (array_key_exists('gcash_qr_code', $data)) {
-        $fields[] = "gcash_qr_code = :gcash_qr_code";
-        $params['gcash_qr_code'] = $data['gcash_qr_code'];
-        $fields[] = "gcash_updated_at = CURRENT_TIMESTAMP";
-    }
-
-    if (!empty($fields)) {
-        $sql = "UPDATE boarding_houses SET " . implode(", ", $fields) . " WHERE house_id = :house_id";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-    }
-    echo json_encode(["success" => true, "message" => "Boarding house updated successfully."]);
-
 } elseif ($method === 'DELETE') {
     $data = json_decode(file_get_contents("php://input"), true);
-    if (!isset($data['house_id'])) {
-        echo json_encode(["success" => false, "message" => "House ID is required."]);
+    $houseId = isset($data['house_id']) ? (int)$data['house_id'] : 0;
+
+    if ($houseId <= 0) {
+        echo json_encode(["success" => false, "message" => "Valid house_id is required."]);
         exit();
     }
-    $houseId = (int)$data['house_id'];
-    $stmt = $pdo->prepare("DELETE FROM boarding_houses WHERE house_id = :house_id");
-    $stmt->execute(['house_id' => $houseId]);
 
-    echo json_encode(["success" => true, "message" => "Boarding house deleted successfully."]);
+    try {
+        $chkHouse = $pdo->prepare("SELECT house_id FROM boarding_houses WHERE house_id = ?");
+        $chkHouse->execute([$houseId]);
+        if (!$chkHouse->fetch()) {
+            echo json_encode(["success" => false, "message" => "Boarding house not found."]);
+            exit();
+        }
+
+        $chkBookings = $pdo->prepare("
+            SELECT 1
+            FROM bookings b
+            JOIN rooms r ON b.room_id = r.room_id
+            WHERE r.house_id = ?
+              AND UPPER(b.status::text) IN ('PENDING', 'APPROVED')
+            LIMIT 1
+        ");
+        $chkBookings->execute([$houseId]);
+        if ($chkBookings->fetch()) {
+            http_response_code(409);
+            echo json_encode([
+                "success" => false,
+                "message" => "This property cannot be deleted while it has active bookings."
+            ]);
+            exit();
+        }
+
+        $upd = $pdo->prepare("UPDATE boarding_houses SET status = 'INACTIVE'::house_status_enum WHERE house_id = ?");
+        $upd->execute([$houseId]);
+
+        echo json_encode([
+            "success" => true,
+            "message" => "Property deleted successfully."
+        ]);
+    } catch (PDOException $e) {
+        echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
+    }
 }
 ?>
