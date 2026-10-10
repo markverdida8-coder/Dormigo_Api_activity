@@ -4,19 +4,21 @@ require_once 'db.php';
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
-    $sql = "SELECT r.*, u.full_name, u.email, u.profile_image, bh.house_name,
+    $sql = "SELECT r.review_id, r.user_id, r.house_id, r.rating, r.comment, r.created_at,
+                   u.full_name,
                    sv.verification_status
             FROM reviews r
             JOIN users u ON r.user_id = u.user_id
             JOIN boarding_houses bh ON r.house_id = bh.house_id
-            LEFT JOIN student_verifications sv ON u.user_id = sv.student_id";
+            LEFT JOIN student_verifications sv ON u.user_id = sv.student_id
+            WHERE (r.is_hidden IS NULL OR r.is_hidden = FALSE)";
     $params = [];
 
     if (isset($_GET['house_id'])) {
-        $sql .= " WHERE r.house_id = :house_id";
+        $sql .= " AND r.house_id = :house_id";
         $params['house_id'] = $_GET['house_id'];
     } elseif (isset($_GET['user_id'])) {
-        $sql .= " WHERE r.user_id = :user_id";
+        $sql .= " AND r.user_id = :user_id";
         $params['user_id'] = $_GET['user_id'];
     }
     $sql .= " ORDER BY r.review_id DESC";
@@ -58,14 +60,24 @@ if ($method === 'GET') {
     ]);
 
 } elseif ($method === 'POST') {
+    require_once 'auth_helper.php';
+    $authUser = authenticateUser($pdo);
+
+    if (strtoupper($authUser['user_type'] ?? '') !== 'STUDENT') {
+        http_response_code(403);
+        echo json_encode(["success" => false, "message" => "Forbidden: Only students can submit reviews."]);
+        exit();
+    }
+
+    $user_id = (int)$authUser['user_id'];
+
     $data = json_decode(file_get_contents("php://input"), true);
-    $user_id = isset($data['user_id']) ? (int)$data['user_id'] : 0;
     $house_id = isset($data['house_id']) ? (int)$data['house_id'] : 0;
     $rating = isset($data['rating']) ? (int)$data['rating'] : 5;
     $comment = $data['comment'] ?? null;
 
-    if ($user_id <= 0 || $house_id <= 0) {
-        echo json_encode(["success" => false, "message" => "User ID and House ID are required."]);
+    if ($house_id <= 0) {
+        echo json_encode(["success" => false, "message" => "House ID is required."]);
         exit();
     }
 
@@ -89,14 +101,22 @@ if ($method === 'GET') {
             exit();
         }
 
-        $stmt = $pdo->prepare("INSERT INTO reviews (user_id, house_id, rating, comment) VALUES (:user_id, :house_id, :rating, :comment) RETURNING review_id");
-        $stmt->execute([
-            'user_id' => $user_id,
-            'house_id' => $house_id,
-            'rating' => $rating,
-            'comment' => $comment
-        ]);
-        $reviewId = $stmt->fetchColumn();
+        try {
+            $stmt = $pdo->prepare("INSERT INTO reviews (user_id, house_id, rating, comment) VALUES (:user_id, :house_id, :rating, :comment) RETURNING review_id");
+            $stmt->execute([
+                'user_id' => $user_id,
+                'house_id' => $house_id,
+                'rating' => $rating,
+                'comment' => $comment
+            ]);
+            $reviewId = $stmt->fetchColumn();
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23505' || strpos($e->getMessage(), 'unique_student_house_review') !== false) {
+                echo json_encode(["success" => false, "message" => "You have already submitted a review for this boarding house."]);
+                exit();
+            }
+            throw $e;
+        }
 
         // Notification - reference_id set to $house_id so tapping opens LandlordReviewsActivity for $house_id
         $info = $pdo->prepare("SELECT u.full_name, bh.landlord_id, bh.house_name FROM boarding_houses bh JOIN users u ON u.user_id = :uid WHERE bh.house_id = :hid");

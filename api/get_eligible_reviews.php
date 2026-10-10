@@ -1,5 +1,6 @@
 <?php
 require_once 'db.php';
+require_once 'auth_helper.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
 if ($method !== 'GET') {
@@ -7,11 +8,15 @@ if ($method !== 'GET') {
     exit();
 }
 
-$user_id = isset($_GET['user_id']) ? (int)$_GET['user_id'] : 0;
-if ($user_id <= 0) {
-    echo json_encode(["success" => false, "message" => "user_id is required."]);
+$authUser = authenticateUser($pdo);
+
+if (strtoupper($authUser['user_type'] ?? '') !== 'STUDENT') {
+    http_response_code(403);
+    echo json_encode(["success" => false, "message" => "Forbidden: Only students can view eligible review properties."]);
     exit();
 }
+
+$user_id = (int)$authUser['user_id'];
 
 try {
     $stmt = $pdo->prepare("

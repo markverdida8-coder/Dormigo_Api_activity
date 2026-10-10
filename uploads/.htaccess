@@ -1,0 +1,3 @@
+<FilesMatch "^(student_id_|student_verif_|landlord_verif_)">
+    Require all denied
+</FilesMatch>
