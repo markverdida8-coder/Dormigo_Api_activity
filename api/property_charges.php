@@ -39,30 +39,6 @@ if ($method === 'GET') {
         exit();
     }
 
-    // Step 1: Safely delete duplicate Electricity and Water records for this house, keeping the oldest valid record (MIN utility_id)
-    $pdo->exec("DELETE FROM property_utilities WHERE house_id = $house_id AND utility_id NOT IN (
-        SELECT MIN(utility_id) FROM property_utilities WHERE house_id = $house_id GROUP BY LOWER(utility_name)
-    )");
-
-    // Step 2: Safely delete duplicate Advance Payment and Security Deposit records, keeping the oldest valid record (MIN deposit_id)
-    $pdo->exec("DELETE FROM property_deposits WHERE house_id = $house_id AND deposit_id NOT IN (
-        SELECT MIN(deposit_id) FROM property_deposits WHERE house_id = $house_id GROUP BY LOWER(deposit_name)
-    ) AND LOWER(deposit_name) IN ('advance payment', 'security deposit')");
-
-    // Step 3: Check existing utilities for house (case-insensitive)
-    $chkUtil = $pdo->prepare("SELECT LOWER(utility_name) FROM property_utilities WHERE house_id = :h");
-    $chkUtil->execute(['h' => $house_id]);
-    $existingUtils = array_map('strtolower', $chkUtil->fetchAll(PDO::FETCH_COLUMN));
-
-    if (!in_array('electricity', $existingUtils)) {
-        $ins = $pdo->prepare("INSERT INTO property_utilities (house_id, utility_name, charging_method, fixed_amount) VALUES (:h, 'Electricity', 'CONSUMPTION_BASED', 0.00)");
-        $ins->execute(['h' => $house_id]);
-    }
-    if (!in_array('water', $existingUtils)) {
-        $ins = $pdo->prepare("INSERT INTO property_utilities (house_id, utility_name, charging_method, fixed_amount) VALUES (:h, 'Water', 'FREE', 0.00)");
-        $ins->execute(['h' => $house_id]);
-    }
-
     $deposits = $pdo->query("SELECT * FROM property_deposits WHERE house_id = $house_id ORDER BY deposit_id ASC")->fetchAll();
     $fees = $pdo->query("SELECT * FROM property_additional_fees WHERE house_id = $house_id ORDER BY fee_id ASC")->fetchAll();
     $utilities = $pdo->query("SELECT * FROM property_utilities WHERE house_id = $house_id ORDER BY utility_id ASC")->fetchAll();
@@ -115,6 +91,25 @@ if ($method === 'GET') {
     $houseName = $houseInfo['house_name'];
 
     try {
+        $pdo->beginTransaction();
+        $advisory = $pdo->prepare('SELECT pg_advisory_xact_lock(164731, CAST(:house_id AS integer))');
+        $advisory->execute(['house_id' => $house_id]);
+        $lockedHouseStmt = $pdo->prepare(
+            'SELECT house_name, landlord_id
+             FROM boarding_houses
+             WHERE house_id = :house_id
+             FOR UPDATE'
+        );
+        $lockedHouseStmt->execute(['house_id' => $house_id]);
+        $lockedHouse = $lockedHouseStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$lockedHouse || (int)$lockedHouse['landlord_id'] !== (int)$authUser['user_id']) {
+            $pdo->rollBack();
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Property ownership changed; reload and try again."]);
+            exit();
+        }
+        $houseName = $lockedHouse['house_name'];
+
         if ($action === 'add_deposit' || $action === 'edit_deposit') {
             $deposit_id = (int)($data['deposit_id'] ?? 0);
             $name = trim($data['deposit_name'] ?? $data['name'] ?? 'Deposit');
@@ -134,8 +129,8 @@ if ($method === 'GET') {
 
             $oldAmount = -1.0;
             if ($deposit_id > 0) {
-                $oldStmt = $pdo->prepare("SELECT amount FROM property_deposits WHERE deposit_id = ?");
-                $oldStmt->execute([$deposit_id]);
+                $oldStmt = $pdo->prepare("SELECT amount FROM property_deposits WHERE deposit_id = ? AND house_id = ? FOR UPDATE");
+                $oldStmt->execute([$deposit_id, $house_id]);
                 $oldRec = $oldStmt->fetch();
                 if ($oldRec) {
                     $oldAmount = (float)$oldRec['amount'];
@@ -163,8 +158,8 @@ if ($method === 'GET') {
 
             $oldAmount = -1.0;
             if ($fee_id > 0) {
-                $oldStmt = $pdo->prepare("SELECT amount FROM property_additional_fees WHERE fee_id = ?");
-                $oldStmt->execute([$fee_id]);
+                $oldStmt = $pdo->prepare("SELECT amount FROM property_additional_fees WHERE fee_id = ? AND house_id = ? FOR UPDATE");
+                $oldStmt->execute([$fee_id, $house_id]);
                 $oldRec = $oldStmt->fetch();
                 if ($oldRec) {
                     $oldAmount = (float)$oldRec['amount'];
@@ -200,8 +195,8 @@ if ($method === 'GET') {
 
             $oldAmount = -1.0;
             if ($utility_id > 0) {
-                $oldStmt = $pdo->prepare("SELECT fixed_amount FROM property_utilities WHERE utility_id = ?");
-                $oldStmt->execute([$utility_id]);
+                $oldStmt = $pdo->prepare("SELECT fixed_amount FROM property_utilities WHERE utility_id = ? AND house_id = ? FOR UPDATE");
+                $oldStmt->execute([$utility_id, $house_id]);
                 $oldRec = $oldStmt->fetch();
                 if ($oldRec) {
                     $oldAmount = (float)$oldRec['fixed_amount'];
@@ -221,8 +216,12 @@ if ($method === 'GET') {
             }
         }
 
+        $pdo->commit();
         echo json_encode(["success" => true, "message" => "Charge saved successfully."]);
     } catch (PDOException $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
     }
 } elseif ($method === 'DELETE') {
@@ -256,6 +255,20 @@ if ($method === 'GET') {
     }
 
     try {
+        $pdo->beginTransaction();
+        $advisory = $pdo->prepare('SELECT pg_advisory_xact_lock(164731, CAST(:house_id AS integer))');
+        $advisory->execute(['house_id' => $house_id]);
+        $lockedHouseStmt = $pdo->prepare(
+            'SELECT landlord_id FROM boarding_houses WHERE house_id = :house_id FOR UPDATE'
+        );
+        $lockedHouseStmt->execute(['house_id' => $house_id]);
+        $lockedHouse = $lockedHouseStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$lockedHouse || (int)$lockedHouse['landlord_id'] !== (int)$authUser['user_id']) {
+            $pdo->rollBack();
+            http_response_code(403);
+            echo json_encode(["success" => false, "message" => "Property ownership changed; reload and try again."]);
+            exit();
+        }
         if ($action === 'delete_deposit') {
             $pdo->prepare("DELETE FROM property_deposits WHERE deposit_id=? AND house_id=?")->execute([$item_id, $house_id]);
         } elseif ($action === 'delete_fee') {
@@ -263,8 +276,12 @@ if ($method === 'GET') {
         } elseif ($action === 'delete_utility') {
             $pdo->prepare("DELETE FROM property_utilities WHERE utility_id=? AND house_id=?")->execute([$item_id, $house_id]);
         }
+        $pdo->commit();
         echo json_encode(["success" => true, "message" => "Item deleted successfully."]);
     } catch (PDOException $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         echo json_encode(["success" => false, "message" => "Database error: " . $e->getMessage()]);
     }
 }

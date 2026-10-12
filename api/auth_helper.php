@@ -64,8 +64,9 @@ function authenticateUser($pdo) {
         ];
 
     } catch (PDOException $e) {
+        error_log('Authentication lookup failed: ' . get_class($e));
         http_response_code(500);
-        echo json_encode(["success" => false, "message" => "Authentication database error: " . $e->getMessage()]);
+        echo json_encode(["success" => false, "message" => "Authentication failed. Please try again later."]);
         exit();
     }
 }

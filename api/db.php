@@ -23,9 +23,11 @@ try {
     ]);
     $pdo->exec("SET search_path TO public;");
 } catch (PDOException $e) {
+    error_log('Database connection failed: ' . get_class($e));
+    http_response_code(500);
     echo json_encode([
         "success" => false,
-        "message" => "Database connection failed: " . $e->getMessage()
+        "message" => "Service temporarily unavailable. Please try again later."
     ]);
     exit();
 }

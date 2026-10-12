@@ -1,4 +1,9 @@
 <?php
+if (in_array($_SERVER['REQUEST_METHOD'] ?? '', ['POST', 'PATCH'], true)) {
+    require __DIR__ . '/api/bookings.php';
+    exit();
+}
+
 require_once 'db.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
@@ -26,65 +31,5 @@ if ($method === 'GET') {
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     echo json_encode(["success" => true, "data" => $stmt->fetchAll()]);
-
-} elseif ($method === 'POST') {
-    $data = json_decode(file_get_contents("php://input"), true);
-    $stmt = $pdo->prepare("INSERT INTO bookings (user_id, room_id, move_in_date, duration_months, status, agreed_monthly_rent, agreed_total_amount, message_to_landlord)
-                            VALUES (:user_id, :room_id, :move_in_date, :duration_months, :status::booking_status_enum, :agreed_monthly_rent, :agreed_total_amount, :message_to_landlord) RETURNING booking_id");
-    $stmt->execute([
-        'user_id' => $data['user_id'],
-        'room_id' => $data['room_id'],
-        'move_in_date' => $data['move_in_date'],
-        'duration_months' => $data['duration_months'],
-        'status' => strtoupper($data['status'] ?? 'PENDING'),
-        'agreed_monthly_rent' => $data['agreed_monthly_rent'],
-        'agreed_total_amount' => $data['agreed_total_amount'],
-        'message_to_landlord' => $data['message_to_landlord'] ?? ''
-    ]);
-    echo json_encode(["success" => true, "message" => "Booking request submitted successfully.", "booking_id" => $stmt->fetchColumn()]);
-
-} elseif ($method === 'PATCH') {
-
-    $data = json_decode(file_get_contents("php://input"), true);
-
-    $fields = [];
-    $params = [
-        'booking_id' => $data['booking_id']
-    ];
-
-    if (isset($data['status'])) {
-        $fields[] = "status = :status::booking_status_enum";
-        $params['status'] = strtoupper($data['status']);
-    }
-
-    if (isset($data['initial_payment_completed'])) {
-        $fields[] = "initial_payment_completed = :initial_payment_completed";
-        $params['initial_payment_completed'] = $data['initial_payment_completed'];
-    }
-
-    if (isset($data['next_due_date'])) {
-        $fields[] = "next_due_date = :next_due_date";
-        $params['next_due_date'] = $data['next_due_date'];
-    }
-
-    if (empty($fields)) {
-        echo json_encode([
-            "success" => false,
-            "message" => "Nothing to update."
-        ]);
-        exit;
-    }
-
-    $sql = "UPDATE bookings
-            SET " . implode(", ", $fields) . "
-            WHERE booking_id = :booking_id";
-
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-
-    echo json_encode([
-        "success" => true,
-        "message" => "Booking updated successfully."
-    ]);
 }
 ?>

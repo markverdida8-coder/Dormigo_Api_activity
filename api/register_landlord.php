@@ -19,7 +19,6 @@ if (empty($fullName) || empty($email) || empty($password)) {
 }
 
 try {
-    // Check if email exists
     $checkStmt = $pdo->prepare("SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email)");
     $checkStmt->execute(['email' => $email]);
     if ($checkStmt->fetch()) {
@@ -59,7 +58,6 @@ try {
         exit();
     }
 
-    // Insert landlord verification record
     $vStmt = $pdo->prepare("INSERT INTO landlord_verifications (landlord_id, document_path, verification_status) VALUES (:landlord_id, :document_path, 'PENDING')");
     $vStmt->execute([
         'landlord_id' => $landlordId,
@@ -67,9 +65,12 @@ try {
     ]);
     $verificationId = $pdo->lastInsertId();
 
-    // Notify Admin (user_id = 3)
-    $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (3, 'New Verification Request', 'New landlord verification request submitted.', 'VERIFICATION', ?)");
-    $nStmt->execute([$verificationId]);
+    $adminStmt = $pdo->query("SELECT user_id FROM users WHERE user_type::text = 'ADMIN' LIMIT 1");
+    $adminId = $adminStmt->fetchColumn();
+    if ($adminId) {
+        $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (?, 'New Verification Request', 'New landlord verification request submitted.', 'VERIFICATION', ?)");
+        $nStmt->execute([$adminId, $verificationId]);
+    }
 
     $pdo->commit();
 

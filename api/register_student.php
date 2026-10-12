@@ -66,8 +66,12 @@ try {
     ]);
     $verificationId = $pdo->lastInsertId();
 
-    $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (3, 'New Student Verification Request', 'New student verification request submitted.', 'VERIFICATION', ?)");
-    $nStmt->execute([$verificationId]);
+    $adminStmt = $pdo->query("SELECT user_id FROM users WHERE user_type::text = 'ADMIN' LIMIT 1");
+    $adminId = $adminStmt->fetchColumn();
+    if ($adminId) {
+        $nStmt = $pdo->prepare("INSERT INTO notifications (user_id, title, message, type, reference_id) VALUES (?, 'New Student Verification Request', 'New student verification request submitted.', 'VERIFICATION', ?)");
+        $nStmt->execute([$adminId, $verificationId]);
+    }
 
     $pdo->commit();
 
