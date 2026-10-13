@@ -14,6 +14,11 @@ $password = trim($data['password']);
 $phone = isset($data['phone']) ? trim($data['phone']) : null;
 $userType = strtoupper(trim($data['user_type']));
 
+if (!preg_match('/^(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9])\S{8,}$/', $password)) {
+    echo json_encode(["success" => false, "message" => "Password must contain at least 8 characters, including 1 uppercase letter, 1 number, and 1 special character."]);
+    exit();
+}
+
 try {
     // Check if email already exists
     $checkStmt = $pdo->prepare("SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email)");

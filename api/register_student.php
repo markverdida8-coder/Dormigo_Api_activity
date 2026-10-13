@@ -9,13 +9,18 @@ if ($method !== 'POST') {
 
 $fullName = isset($_POST['full_name']) ? trim($_POST['full_name']) : '';
 $email = isset($_POST['email']) ? trim($_POST['email']) : '';
-$password = isset($_POST['password']) ? trim($_POST['password']) : '';
+$password = isset($_POST['password']) ? $_POST['password'] : '';
 $phone = isset($_POST['phone']) ? trim($_POST['phone']) : null;
 $school = isset($_POST['school']) ? trim($_POST['school']) : null;
 $userType = 'STUDENT';
 
 if (empty($fullName) || empty($email) || empty($password)) {
     echo json_encode(["success" => false, "message" => "Please fill in all required fields."]);
+    exit();
+}
+
+if (!preg_match('/^(?=.*[A-Z])(?=.*[0-9])(?=.*[^A-Za-z0-9])\S{8,}$/', $password)) {
+    echo json_encode(["success" => false, "message" => "Password must contain at least 8 characters, including 1 uppercase letter, 1 number, and 1 special character."]);
     exit();
 }
 
@@ -29,11 +34,13 @@ try {
 
     $pdo->beginTransaction();
 
+    $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
     $stmt = $pdo->prepare("INSERT INTO users (full_name, email, password, phone, user_type) VALUES (:full_name, :email, :password, :phone, :user_type::user_type_enum) RETURNING user_id, full_name, email, phone, user_type");
     $stmt->execute([
         'full_name' => $fullName,
         'email' => $email,
-        'password' => $password,
+        'password' => $hashedPassword,
         'phone' => $phone,
         'user_type' => $userType
     ]);
